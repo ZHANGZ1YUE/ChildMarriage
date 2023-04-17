@@ -1,0 +1,791 @@
+---
+title: "Using GIS environmental data for gender statistics analysis"
+subtitle: "A step-by-step case study with Bangladesh data "
+author: "Christophe Bontemps & Eunkoo Lee - SIAP"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: show
+    highlight: tango
+    number_sections: yes
+    theme: lumen
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set( message = FALSE, warning = FALSE, results =FALSE, echo = TRUE) 
+```
+
+* * *
+# 1. Introduction to integrating household survey and geospatial data
+
+## GIS data sources
+
+There are many data sources freely available with environmental information at a very detailed level. These files are from huge data bases that cover large areas of the word. 
+
+> Some sources may require a login and an enrollment to some institution. Most of the files are very "heavy". 
+
+The table hereafter provides some links to the resources we have used for this analysis. 
+
+
+|     Geo-covariates      |     Definition                                                                                                                                               |     Data   source link (use Google Chrome)                                                                                                |
+|-------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------|
+|     Travel_Times2015    |     Travelling time (in minutes) to the nearest city of   more than 50,000 people                                                                            |     https://doi.org/10.6084/m9.figshare.7638134.v3                                                                                        |
+|     SMOD2015            |     Degree of urbanization                                                                                                                                   |     http://cidportal.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_SMOD_POP_GLOBE_R2016A/                                                    |
+|     Buildup2015         |     Percentage of building footprint area in relation to   the total cell area.                                                                              |     http://cidportal.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_BUILT_LDSMT_GLOBE_R2015B/GHS_BUILT_LDS2014_GLOBE_R2016A_54009_1k/V1-0/    |
+|     Aridity2015         |     Climate data related to evapotranspiration processes   and rainfall deficit for potential vegetative growth. Higher index suggests   higher humidity.    |     https://figshare.com/articles/Global_Aridity_Index_and_Potential_Evapotranspiration_ET0_Climate_Database_v2/7504448/3                 |
+|     Density2015         |     Number of inhabitants per   cell (1km X 1km)                                                                                                             |     http://cidportal.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_POP_GPW4_GLOBE_R2015A/GHS_POP_GPW42015_GLOBE_R2015A_54009_1k/V1-0/        |
+|     aIncome2013         |     Estimates of income in USD   per grid square                                                                                                             |     https://www.worldpop.org/doi/10.5258/SOTON/WP00020                                                                                    |
+|     aPP2013             |     Mean likelihood of living in   poverty per grid square                                                                                                   |     https://www.worldpop.org/doi/10.5258/SOTON/WP00020                                                                                    |
+|     aWealthIndex2011    |     Mean DHS wealth index score   per grid square                                                                                                            |     https://www.worldpop.org/doi/10.5258/SOTON/WP00020                                                                                    |
+
+### Some good practices for file management {-}
+
+We need a minimum of organisation in the data and code folders, as well as some R packages.
+
+```{r packages}
+# GIS packages
+library(raster) ## for reading "RASTER" files
+library(rgdal)  ## for reading "shapefiles"
+library(sp)     
+
+# Tidy data management packages
+library(dplyr)
+library(data.table)
+
+# Plotting packages
+library(ggplot2)
+library(RColorBrewer)
+
+# Nice presentation of results
+library(knitr)
+library(papeR)
+```
+
+The *raw* files we have downloaded (and which are heavy) can be stored in a project folder for future usage. We distinguish here several folders depending on the source and type of the data sets. It is also important to use a different folder for the data set we'll be creating. 
+
+```{r}
+# --- Change to YOUR project folder HERE  ---- #
+source_folder<-"~/Documents/United Nations/childmarriage/"
+
+data_folder<-paste(source_folder,"Data/",sep="")
+
+# Specific sub-folder for data storage
+shapedata_folder<-paste(source_folder, "Data/dhsdata/BDGE71FL", sep="")  
+geodata_folder<-paste(source_folder, "Data/geodata/", sep="")
+
+# this is where all saved .Rda go and can be loaded when needed
+CreatedData<-paste(source_folder, "CreatedData/" , sep="")  
+```
+
+
+# 2. Understanding child marriage using geo-covariates
+
+## The DHS survey 
+
+The DHS Bangladesh 2014 provides useful demographic and socioeconomic variables (e.g. age, sex, age at first marriage, marital status, education, wealth index, etc.) that can be used to analyze the impact of each of these variables on child marriage. 
+
+
+```{r}
+# Reading DHS survey data 
+DHS<-read.csv(file = paste0(source_folder,'Data/bangladesh.csv'))  # reading DHS Bangladesh 2014
+DHS$Age<-as.numeric(DHS$Age)
+
+```
+
+### Reading the DHS Shapefile {-} 
+
+In addition to the survey variables, the *DHS survey* collect GPS location data of surveyed clusters.
+
+> The coordinates of each cluster, along with other geographic information, is stored in the GIS *shapefile* that can be [downloaded](https://dhsprogram.com/data/available-datasets.cfm) together with the DHS survey. 
+
+```{r}
+# Reading DHS Shapefile 
+dhsShapeData<-readOGR(shapedata_folder, "BDGE71FL") # Reads the shapefile in DHS
+shapedata<-dhsShapeData@data                        # Reads the data part 
+shapefile_df <- fortify(shapedata)
+shapedata<-shapedata[shapedata$LATNUM>0, ]          # Drops negative Latnum 
+```
+
+### Cluster locations by urban and rural from the shapefile (DHS Bangladesh 2014) {-}
+
+We can use the *latitude* and *longitude* of each observation  to draw a "location map" of the clusters.  
+
+NB: This is not really "a map", but only points with latitude and longitude defined represented on a grid
+
+
+```{r}
+# Now the shapefile can be plotted, as points 
+# In the aesthetics part of the ggplot we need long, lat,
+#                       and we use group for Urban or Rural.
+map <- ggplot() +
+  geom_point(data = shapedata,
+              aes(x = LONGNUM, y = LATNUM, color = factor(URBAN_RURA)),
+              size = .6) +
+ ggtitle("Shapefile Cluster Location on and X-Y grid") + 
+         labs(x=  "X-axis used as Longitude" ,
+              y = "Y-axis used as Latitude")
+
+# Using the ggplot2 function coord_map will make things look better
+# and it will also let you change the projection.
+map_projected <- map +
+  coord_map()+
+  theme_minimal()
+
+map_projected
+
+```
+
+
+
+## Using GIS sources 
+
+### Matching DHS (*Shapefile*) and GIS (*raster*) files using CRS {-} 
+
+We need to know what is the **CRS** (Coordinates Reference System) for the Raster file in order to use the same for the DHS data and to have exact correspondence of the two geographical systems
+
+
+```{r, results= TRUE}
+# Reading geographic data - access to cities
+accessData<-raster(paste(geodata_folder,
+                         "accessibility_to_cities_2015.tif",
+                         sep=""))
+accessData
+```
+Here the CRS is "*CRS = +proj=longlat +datum=WGS84 +no_defs*" so we know it is using the *WGS84*^[WGS 84 is an Earth-centered, Earth-fixed terrestrial reference system and geodetic datum. WGS 84 is based on a consistent set of constants and model parameters that describe the Earth's size and shape (see https://en.wikipedia.org/wiki/World_Geodetic_System.]
+
+> We need to provide the same  projection reference for the DHS data (shapefile)
+
+We can use the package *sp* and the *spTranform* function for that. 
+
+```{r}
+#  We use sp::spTransform to tell wich CRS is used.
+
+dhsShapeData <- spTransform(dhsShapeData, accessData@crs)
+dhsShapeData
+
+```
+
+### Extracting values from a raster {-}    
+
+We can now **extract** the values from the *acessData* file (a Raster object) at the locations of our household (shapefile). The result is a data frame. The first column is a sequential ID, the other columns are the extracted values, i.e. the travel time to a city for each cluster. 
+
+> Extracting values takes time. 
+
+#### Example with the poverty index (Mean likelihood of living in poverty per grid square - *worldpop.org*) {-}
+
+- **First**, We can just **read** the raster file
+
+```{r RasterReadingAPP, cache = TRUE}
+# Reading raster file for aPP2013 
+aPPData<-raster(paste(geodata_folder, "bgd2013ppipov.tif", sep=""))
+```
+
+-  Then, we can **visualize** the information from this file on a map, here a poverty map. 
+
+```{r}
+# Main plot using the plotting function of raster package
+plot(aPPData, 
+     breaks=c(0, 60, 70, 75, 80, 85, 100, 150),  
+     col = terrain.colors(8),
+     main="Poverty Map") 
+```
+
+- **Second**,  we can **extract** the information from the raster file for each cluster location. This operation, using the *extract* function from the *raster* package^[see the documentation https://www.rdocumentation.org/packages/raster/versions/3.4-13/topics/extract],  takes a lot of resources and **can be lengthy! **
+
+```{r RasterExtractionAPP, cache = TRUE}
+dhs_all2000 <- extract(aPPData,         # Raster file
+                       dhsShapeData,    # Shapefile with DHS information   
+                       buffer = 2000,   # Buffer (meters) around each point where extracting values
+                       df=TRUE)         # returns a data frame
+
+dhs_all2000<-as.data.frame(dhs_all2000) # Because it may not return a data frame
+```
+
+We may remove some NAs generated by the matching 
+
+```{r CleaningAPP}
+temp<-dhs_all2000[!is.na(dhs_all2000$bgd2013ppipov), ]  # removing NAs in poverty estimates
+```
+
+There may be several poverty estimates values in each cluster, so we'll aggregate this information at the cluster level. 
+
+```{r AggregationAPP}
+# Aggregating at the cluster level
+
+aPPData.agg<-aggregate(temp$bgd2013ppipov,
+                       by=list(temp$ID),
+                       FUN=mean)                      
+# Adding column name
+colnames(aPPData.agg)<-c("DHSCLUST", "aPP2013")
+# save(aPPData.agg, file="CreatedData/aPPData.Rda")
+```
+
+#### Map of PSU locations on poverty map from the raster file {-}
+
+```{r}
+# Main plot using the plotting function of raster package
+plot(aPPData, 
+     breaks=c(0, 60, 70, 75, 80, 85, 100, 150),  
+     col = terrain.colors(8),
+     main="Map of PSU locations on Poverty Map", 
+     sub="Probability of Poverty") 
+
+# We can add points for each cluster location on this map
+points(x=shapedata$LONGNUM, 
+       y=shapedata$LATNUM, 
+       type="p", 
+       cex=0.3, 
+       pch=21, 
+       bg=1)
+```
+
+
+### Importing other geographical information from other raster files {-}
+
+The exact same operations can be done with all the other geographic files we have identified
+
+
+> These operations take time and you want to skip these steps and upload directly the file created. 
+
+####  **Aridity** Index (Global Aridity Index - *wordclim.org*) {-}
+
+```{r RasterExtractionAridity, cache = TRUE, eval =FALSE}
+ # Reading raster file for Aridity2015 
+memory.limit(9999999999)
+aridityData <- raster(readGDAL(paste(geodata_folder, "AI_annual/ai_yr/w001001.adf", sep="")))
+dhsShapeData <- spTransform(dhsShapeData, aridityData@crs)
+dhs_all2000 <- extract(aridityData,
+                       dhsShapeData,
+                       buffer = 2000,
+                        df=TRUE)
+dhs_all2000<-as.data.frame(dhs_all2000)
+dhs_all2000<-dhs_all2000[!is.na(dhs_all2000$band1),]
+ 
+aridityData.agg<-aggregate(dhs_all2000$band1,
+                             by=list(dhs_all2000$ID),
+                             FUN=mean)
+colnames(aridityData.agg)<-c("DHSCLUST", "Aridity2015")
+#save(aridityData.agg, file="CreatedData/aridityData.Rda")
+```
+
+####  **Wealth** Index (Mean wealth index score - *Worldpop.org* ) {-}
+
+```{r RasterExtractionWealth, cache = TRUE, eval=FALSE}
+# # Reading raster file for aWealthindex2011 
+# aWIData<-raster(paste(geodata_folder, "bgd2011wipov.tif", sep=""))
+# dhsShapeData <- spTransform(dhsShapeData, aWIData@crs)
+# dhs_all2000 <- extract(aWIData,    
+#                        dhsShapeData,          
+#                        buffer = 2000,     
+#                        df=TRUE)           
+# dhs_all2000<-as.data.frame(dhs_all2000)
+# temp<-dhs_all2000[!is.na(dhs_all2000$bgd2011wipov), ]
+# 
+# aWIData.agg<-aggregate(temp$bgd2011wipov,
+#                        by=list(temp$ID),
+#                        FUN=mean)
+# colnames(aWIData.agg)<-c("DHSCLUST", "aWealthIndex2011")
+# #save(aWIData.agg, file="CreatedData/aWIData.Rda")
+
+```
+
+####  **Access to Cities** Index (Nature - Extracted  from Google Maps Platform Distance Matrix API) {-}
+*Travelling time (in minutes) to the nearest city of more than 50,000 people*
+
+```{r RasterExtractionAccess, cache = TRUE}
+# # Reading raster file for  Access to Cities
+# accessData<-raster(paste(geodata_folder, "accessibility_to_cities_2015.tif", sep=""))
+# dhsShapeData <- spTransform(dhsShapeData, accessData@crs)
+
+# # Data extraction using the matching between raster and Spatial data
+# dhs_all2000 <- raster::extract(accessData,    # raster layer
+#                                dhsShapeData,  # SPDF with centroids for buffer
+#                                buffer = 2000, # buffer size (meters)
+#                                 df=TRUE)      # returns a dataframe
+#     
+# dhs_all2000<-as.data.frame(dhs_all2000)
+
+### Filtering to remove na values and distances equal to 0. 
+
+# dhs_all2000<-dhs_all2000[!is.na(dhs_all2000$accessibility_to_cities_2015)
+#                          & dhs_all2000$accessibility_to_cities_2015>=0, ]
+# 
+# # Aggregation (mean of the travel times for each cluster)
+# # Name changed here to avoid erasing row data: acessData --> accessData.agg
+# accessData.agg<-aggregate(dhs_all2000$accessibility_to_cities_2015, 
+#                           by=list(dhs_all2000$ID), 
+#                           FUN=mean)
+# colnames(accessData.agg)<-c("DHSCLUST", "Travel_Times2015")
+# 
+# # Saving the file in a devoted folder 
+# save(accessData.agg, file="CreatedData/accessData.Rda")
+```
+
+#### **Urbanization** Index (Degree of urbanization - *Europa.eu*) {-} 
+
+```{r RasterExtractionSmod, cache = TRUE, eval =FALSE}
+# # Reading raster file for SMOD2015 
+# smodData<-raster(paste(geodata_folder, "GHS_SMOD_POP2015_GLOBE_R2016A_54009_1k_v1_0.tif", sep=""))
+# dhsShapeData <- spTransform(dhsShapeData, smodData@crs)
+# dhs_all2000 <- extract(smodData,    # raster layer
+#                        dhsShapeData,         
+#                        buffer = 2000,     
+#                        df=TRUE)           
+# dhs_all2000<-as.data.frame(dhs_all2000) 
+# 
+# smodData.agg<-aggregate(dhs_all2000$GHS_SMOD_POP2015_GLOBE_R2016A_54009_1k_v1_0,
+#                         by=list(dhs_all2000$ID),
+#                         FUN=mean)
+# colnames(smodData.agg)<-c("DHSCLUST", "SMOD2015")
+# save(smodData.agg, file="CreatedData/smodData.Rda")
+```
+
+
+#### **Building concentration** index (Percentage of building - *European Union*)  {-} 
+ 
+```{r RasterExtractionBuildup, cache = TRUE, eval =FALSE}
+# # Reading raster file for Buildup2015 
+# buildupData<-raster(paste(geodata_folder, "GHS_BUILT_LDS2014_GLOBE_R2016A_54009_1k_v1_0.tif", sep=""))
+# dhsShapeData2 <- spTransform(dhsShapeData, buildupData@crs)
+# dhs_all2000 <- extract(buildupData,    
+#                        dhsShapeData2,          
+#                        buffer = 2000,    
+#                        df=TRUE)           
+# dhs_all2000<-as.data.frame(dhs_all2000)
+# 
+# buildupData.agg<-aggregate(dhs_all2000$GHS_BUILT_LDS2014_GLOBE_R2016A_54009_1k_v1_0,
+#                            by=list(dhs_all2000$ID),
+#                            FUN=mean)
+# colnames(buildupData.agg)<-c("DHSCLUST", "Buildup2015")
+# save(buildupData.agg, file="CreatedData/buildupData.Rda")
+```
+
+#### **Population Density** Index (Number of inhabitants per cell (1km X 1km) - *European Union* ) {-} 
+
+```{r RasterExtractionDensity, cache = TRUE, eval =FALSE}
+# # Reading raster file for Density2015 
+# densityData<-raster(paste(geodata_folder, "GHS_POP_GPW42015_GLOBE_R2015A_54009_1k_v1_0.tif", sep=""))
+# dhsShapeData2 <- spTransform(dhsShapeData, densityData@crs)
+# dhs_all2000 <- extract(densityData,    
+#                        dhsShapeData2,          
+#                        buffer = 2000,     
+#                        df=TRUE)          
+# dhs_all2000<-as.data.frame(dhs_all2000)
+# 
+# densityData.agg<-aggregate(dhs_all2000$GHS_POP_GPW42015_GLOBE_R2015A_54009_1k_v1_0,
+#                            by=list(dhs_all2000$ID),
+#                            FUN=mean)
+# colnames(densityData.agg)<-c("DHSCLUST", "Density2015")
+# save(densityData.agg, file="CreatedData/densityData.Rda")
+```
+
+#### **Income** Index (Estimates of income in USD per grid square - *Worldpop.org*) {-} 
+
+```{r RasterExtractionIncome, cache = TRUE, eval =FALSE}
+# # Reading raster file for aIncome2013 
+# aICData<-raster(paste(geodata_folder, "bgd2013incpov.tif", sep=""))
+# dhs_all2000 <- extract(aICData,    
+#                        dhsShapeData,         
+#                        buffer = 2000,     
+#                        df=TRUE)          
+# dhs_all2000<-as.data.frame(dhs_all2000)
+# temp<-dhs_all2000[!is.na(dhs_all2000$bgd2013incpov), ]
+# 
+# aICData.agg<-aggregate(temp$bgd2013incpov,
+#                        by=list(temp$ID),
+#                        FUN=mean)
+# colnames(aICData.agg)<-c("DHSCLUST", "aIncome2013")
+# save(aICData.agg, file="CreatedData/aICData.Rda")
+```
+
+
+# Logistic regression and Random Forests 
+
+The DHS survey records individual information on various aspects and 
+
+
+## Research question
+
+Child marriage (marriage before the age of 18) is a fundamental violation of human rights. Girls who marry before they turn 18 are less likely to remain in school and more likely to experience domestic violence. Despite laws against child marriage, 650 million girls and women alive today were married as children. 
+
+> Several factors are known to influence the probability of getting married before 15 or 18. How about **environment factors**? Do environment-related factors such as drought episodes, level of aridity and urbanization have any impact on child marriage? 
+
+
+#### Technical remark {-}
+> Since the previous operations may take time and CPU resources, you can directly load the data sets created above and **start using the code here**
+
+We have stored on SIAp's website the files created in the integration process described above. You can then use these files to proceed with the analysis.   
+
+```{r FileLoading, cache = TRUE}
+### Loading  Geo-covariate for clusters from SIAP's server ## 
+
+load(url("https://www.unsiap.or.jp/on_line/Big_Data/accessData.Rda"))
+load(url("https://www.unsiap.or.jp/on_line/Big_Data/smodData.Rda"))
+load(url("https://www.unsiap.or.jp/on_line/Big_Data/buildupData.Rda"))
+load(url("https://www.unsiap.or.jp/on_line/Big_Data/aridityData.Rda"))
+load(url("https://www.unsiap.or.jp/on_line/Big_Data/densityData.Rda"))
+load(url("https://www.unsiap.or.jp/on_line/Big_Data/aWIData.Rda"))
+load(url("https://www.unsiap.or.jp/on_line/Big_Data/aICData.Rda"))
+load(url("https://www.unsiap.or.jp/on_line/Big_Data/aPPData.Rda"))
+```
+
+## Data Analysis
+For our analysis, we will first merge all the geospatial  information into a simple data frame. We create a function (*dhsdataMerge*) for that.  
+
+```{r}
+## Function used for merging geo-covariates to DHS data #
+dhsdataMerge<-function(originalData){
+  datause<-merge(originalData, accessData.agg, by=c("DHSCLUST"), all.x=T)
+  datause<-merge(datause, smodData.agg, by=c("DHSCLUST"), all.x=T)
+  datause<-merge(datause, buildupData.agg, by=c("DHSCLUST"), all.x=T)
+  datause<-merge(datause, aridityData, by=c("DHSCLUST"), all.x=T)  ## NO .agg HERE because you gave it to me already aggregated !!! 
+  datause<-merge(datause, densityData.agg, by=c("DHSCLUST"), all.x=T)
+  datause<-merge(datause, aWIData.agg, by=c("DHSCLUST"), all.x=T)
+  datause<-merge(datause, aICData.agg, by=c("DHSCLUST"), all.x=T)
+  datause<-merge(datause, aPPData.agg, by=c("DHSCLUST"), all.x=T)
+  datause<-datause[datause$DHSCLUST!=544,]
+  return(datause)
+}
+
+#Computing the proportion of getting married before 15 by cluster
+cluster_average<-aggregate(Before15~DHSCLUST,
+                           data=DHS,
+                           FUN=mean)  
+
+# Using the function dhsdataMerge(), we can merge the file DHS cluster_average
+# with all the Geo-covariate extracted at the cluster level
+data.agg<-dhsdataMerge(cluster_average) 
+```
+
+### Correlation plot {-}
+
+Before we begin our statistical analysis, we can look at the general relationships of the independent variable by calculating the correlation matrix. Using R, we can easily create a correlation plot for the eight geo-covariates to investigate whether there is any relationship between them. 
+
+> It is always a good practice to analyse the relationships between the variables
+
+```{r }
+library(ggcorrplot)
+
+# We compute the correlation matrix of the covariates
+corr_coef<-cor(data.agg[, c(3:10)],use = "p")
+#And then plot it with nice options 
+ggcorrplot(corr_coef, 
+           type = "lower",         # lower triangle of the matrix only
+           hc.order = TRUE,        # variable sorted from highest to lowest
+           outline.col = "white",  #Color options
+           lab = TRUE)
+
+```
+
+## Logistic regression
+
+We will use the DHS survey at the individual level and construct a binary response variable indicating whether there was marriage before 15 years old (or "*girl's marriage*"). We will try to understand which factor**S** may affect the probability to observe girl's marriage, and in particular whether, after controlling for the usual individual factors such as education, wealth and other socioeconomic factors, there is also an impact of environmental factors.   
+
+
+```{r}
+# We use the dhsdataMerge function to merge the survey data (individuals)
+# with all the Geo-covariate extracted at the cluster level
+DataDHS<-dhsdataMerge(DHS)
+
+# We need to have a factor variable and not directly Before15 (that is numeric here)  
+DataDHS$I_Before15 <- as.factor(DataDHS$Before15)
+
+# Education is a factor variable
+DataDHS$Education <- as.factor(DataDHS$Education)
+# DataDHS <- DataDHS %>%                    # defining the reference category
+#   mutate(Education = relevel(Education, "0-No"))
+# 
+
+# We change the unit of Aridity here 
+DataDHS$Aridity2015 <- DataDHS$Aridity2015 * 10^8
+
+# Defining the variables of the model
+Y<-"I_Before15"               # Response variable
+XCovars <- c(15, 17, 57:64)   # age+education+GIS
+
+formula_string<- paste(Y, paste(colnames(DataDHS)[XCovars], collapse=" + "), sep="~")
+print(paste(" Regression formula: ",formula_string))
+
+```
+### Results {-}
+We use a logit model with several explanatory variables
+
+```{r, results='asis'}
+# Logistics Regression
+glm.fit <- glm(formula_string, data = DataDHS, family = binomial)
+
+# Nice printing of the results (using paper and knitr packages)
+pretty_lm2 <- prettify(summary(glm.fit))
+kable(pretty_lm2, digits = 3)
+
+```
+
+
+
+### Confusion Matrix {-}
+
+The confusion matrix shows how well the model predicted the outcome. If the model was perfect, we would only have elements on the diagonal of this matrix and 0’s everywhere. In total, the model misclassified (1426 + 4442)/21262 = **29%** of the outcome, which yields **an accuracy of 71 per cent** (100%-29%).
+
+```{r, results=TRUE }
+library("regclass")
+confusion_matrix(glm.fit)
+```
+
+
+### Visual representation of the logistic model{-} 
+We can also visualize the effect of some of the most significant variables in the model. 
+
+```{r visreg}
+library(visreg)
+library(ggpubr)
+
+# Probabilities of married before 15 wrt 
+p.age <- visreg(glm.fit, "Age", scale="response", rug=0,  # for rugs =2
+       xlab="Age",
+       ylab="P(Before15=1)", gg=TRUE) + 
+  ylim(0,1) +theme_minimal()
+
+p.education <- visreg(glm.fit, "Education", scale="response", rug=0,
+       xlab="Education",
+       ylab="P(Before15=1)", gg=TRUE) + 
+  ylim(0,1) + theme_minimal() + 
+ theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust=1,
+                                   size=7))
+
+
+p.aridity <- visreg(glm.fit, "Aridity2015", scale="response", rug=0,
+       xlab="Aridity level (2015)",
+       ylab="P(Before15=1)", gg=TRUE) + 
+  ylim(0,1) +theme_minimal()
+
+p.income <- visreg(glm.fit, "aIncome2013", scale="response", rug=0,
+       xlab=" Estimated income (in $ 2013)",
+       ylab="P(Before15=1)", gg=TRUE) + 
+  ylim(0,1) +theme_minimal()
+
+
+figure <- ggarrange( p.age, p.education, p.aridity, p.income,
+                    #labels = c("Edudation", "Age",  "Aridity (2015)", ""),
+                    ncol = 2, nrow = 2)
+figure
+```
+
+We can see the marginal effects  of significant predictors in the model. The probability of being married before 15 increases with age. This shows the higher prevalence of the practice in the past.
+
+As the level of education increases, the probability decreases. We can notice a clear drop in the probability between the category “incomplete secondary” and “complete secondary”. 
+
+> As the aridity (Aridity2015) level increases, the probability decreases. As the level of income (aPP2013) increases, the probability decreases. 
+
+
+
+
+
+
+
+#########################Validation Start
+
+
+```{r, results='asis'}
+# Logistics Regression
+library(caret)
+set.seed(42) # Set a random seed for reproducibility
+splitIndex <- createDataPartition(DataDHS$I_Before15, p = 0.8, list = FALSE)  #change p freely
+trainData <- DataDHS[splitIndex, ]
+validationData <- DataDHS[-splitIndex, ]
+
+glm.fit_80 <- glm(formula_string, data = trainData, family = binomial)
+#glm.fit <- glm(formula_string, data = DataDHS, family = binomial)
+
+
+predicted_probabilities_80 <- predict(glm.fit_80, validationData, type = "response")
+predicted_classes_80 <- as.factor(ifelse(predicted_probabilities_80 > 0.5, 1, 0))
+
+# Calculate the accuracy of the model
+confusionMatrix_80 <- confusionMatrix(predicted_classes_80, as.factor(validationData$I_Before15))
+accuracy_80 <- confusionMatrix_80$overall["Accuracy"]
+cat("Accuracy:", accuracy_80)
+
+
+# Nice printing of the results (using paper and knitr packages)
+pretty_lm2_80 <- prettify(summary(glm.fit_80))
+kable(pretty_lm2_80, digits = 3)
+
+
+```
+
+
+```{r visreg}
+library(visreg)
+library(ggpubr)
+
+# Probabilities of married before 15 wrt 
+p.age <- visreg(glm.fit_80, "Age", scale="response", rug=0,  # for rugs =2
+       xlab="Age",
+       ylab="P(Before15=1)", gg=TRUE) + 
+  ylim(0,1) +theme_minimal()
+
+p.education <- visreg(glm.fit_80, "Education", scale="response", rug=0,
+       xlab="Education",
+       ylab="P(Before15=1)", gg=TRUE) + 
+  ylim(0,1) + theme_minimal() + 
+ theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust=1,
+                                   size=7))
+
+
+p.aridity <- visreg(glm.fit_80, "Aridity2015", scale="response", rug=0,
+       xlab="Aridity level (2015)",
+       ylab="P(Before15=1)", gg=TRUE) + 
+  ylim(0,1) +theme_minimal()
+
+p.income <- visreg(glm.fit_80, "aIncome2013", scale="response", rug=0,
+       xlab=" Estimated income (in $ 2013)",
+       ylab="P(Before15=1)", gg=TRUE) + 
+  ylim(0,1) +theme_minimal()
+
+
+figure <- ggarrange( p.age, p.education, p.aridity, p.income,
+                    #labels = c("Edudation", "Age",  "Aridity (2015)", ""),
+                    ncol = 2, nrow = 2)
+figure
+```
+
+########################Validation End
+
+
+
+
+
+# Random Forests  
+ 
+Random Forests is basically a collection of many decision trees. Rather than considering a single decision tree, Random Forests creates a wide variety of trees by using a bootstrapped sample from the original data and considering only a subset of the variables for split nodes until it reaches the terminal nodes. The variables for split nodes are randomly chosen from a subset of variables (e.g. *Aridity*, *SMOD2015*) that minimize the variance in the child nodes. By repeating this process many times (n=500 by default in R), this results in a forest of different decision trees. 
+
+```{r RF, cache = TRUE}
+set.seed(888)               # set random seed so we can reproduce the result
+myRandomForest<-randomForest(as.formula(formula_string),
+                             data = DataDHS,
+                             importance = TRUE,
+                             maxnodes=25,
+                             ntree=1000,
+                             type="classification",
+                             na.action = na.roughfix)
+```
+
+We use *randomForest* package in R to fit a Random Forests model. The default number of trees is set to 500 in R, but we can also set the number of trees of our choice (*ntree=1000*).
+
+### Accuracy rate and confusion Matrix {-}
+
+
+
+```{r, results = TRUE}
+myRandomForest
+
+```
+
+ The error rate of our model is **27.44 %**, which means the accuracy of the model is about **73 per cent**. This is slightly higher than the logistic regression model (71 per cent). 
+
+### Variable importance plot {-}
+
+Using the *varImPlot* function in R, we can find out which variables play an important role in the model. The variable importance plot basically shows the mean decrease in accuracy when we remove each variable while making the decision tree.
+
+```{r}
+varImpPlot(myRandomForest, 
+           type = 1,
+           main =" Importance Plot for Random Forest Model")
+```
+
+The first four important variables are “*Education*”, “*Age*”, “*aPP2013*” and “*Aridity 2015*”. This is also consistent with the result we get from the logistic regression where these variables were also significant. 
+
+
+
+
+
+
+
+###############Validation start
+
+
+# Random Forests  
+
+
+```{r RF, cache = TRUE}
+set.seed(888)               # set random seed so we can reproduce the result
+myRandomForest_80<-randomForest(as.formula(formula_string),
+                             data = trainData,
+                             importance = TRUE,
+                             maxnodes=25,
+                             ntree=1000,
+                             type="classification",
+                             na.action = na.roughfix)
+```
+
+
+
+```{r, results = TRUE}
+myRandomForest_80
+
+```
+
+
+
+
+```{r, results = TRUE}
+predicted_classes <- predict(myRandomForest_80, validationData, type = "response")
+confusionMatrix <- confusionMatrix(predicted_classes, as.factor(validationData$I_Before15))
+accuracy <- confusionMatrix$overall["Accuracy"]
+cat("Accuracy:", accuracy)
+
+```
+
+```{r}
+varImpPlot(myRandomForest_80, 
+           type = 1,
+           main =" Importance Plot for Random Forest Model")
+```
+#################Validation End
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Conclusion
+
+The results suggest that: 
+
+-  “*Education*”, 
+- “*Age*”, 
+- “*Poverty*" (aPP2013) and 
+- “*Aridity*” 
+
+are important variables in explaining and predicting the outcome of marriage before 15 in Bangladesh.
+
+It is intuitive that “Education” empowers women and it significantly reduces the probability of being married before 15. *Age* is positively related to the probability of being married before 15,  suggesting that child marriage is relatively more prevalent in the past, and reveals relative improvements over recent years. 
+
+> Using GIS data, we showed that the *level of aridity*, which measures humidity and rain fall, is significant in predicting child marriage before 15. 
+
+Further research is needed to provide insights on these findings. 
