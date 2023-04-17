@@ -65,7 +65,6 @@ glm.fit <- glm(formula_string, data = DataDHS, family = binomial)
 library(visreg)
 library(ggpubr)
 
-
 # Define server logic required to draw a histogram
 function(input, output, session) {
 
