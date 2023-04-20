@@ -2,7 +2,7 @@
 title: "Using GIS environmental data for gender statistics analysis"
 subtitle: "A step-by-step case study with Bangladesh data "
 author: "Ziyue Zhang & Christophe Bontemps & Eunkoo Lee - SIAP"
-date: "`r format(Sys.time(), '%d %B, %Y')`"
+date: "2023 - 04"
 output:
   html_document:
     code_folding: show
